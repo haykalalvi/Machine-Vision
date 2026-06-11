@@ -1,0 +1,1 @@
+/Users/alvi/OpenCV/data/NEU Metal Surface Defects Data

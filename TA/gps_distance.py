@@ -19,6 +19,10 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
 #-6.891935, 107.610573 second
 # first -6.892191, 107.610710
+# lat=-6.890803 lon=107.610240 third
+# lat=-6.890750 lon=107.610406 fourth
+# lat=-6.890251 lon=107.610159 second
 
-dist = calculate_distance(-6.892025, 107.610583, -6.891935, 107.610573)
+# dist = calculate_distance(-6.890345, 107.610214, -6.890270, 107.610174)
+dist = calculate_distance(-6.890399, 107.610165, -6.890405, 107.610187)
 print(f"Distance: {dist:.2f} meters")

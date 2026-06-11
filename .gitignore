@@ -7,3 +7,5 @@ __pycache__/
 wandb/
 runs/
 *.onnx
+data/
+dataset_NEU_KW/

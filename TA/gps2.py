@@ -33,6 +33,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import paho.mqtt.client as mqtt
 import json
+import math
 
 try:
     import pynmea2
@@ -57,7 +58,7 @@ FRAME_END_MARKER   = 0x55AA55AA
 GPS_PORT                = '/dev/serial0'
 GPS_BAUD                = 9600
 GPS_UPDATE_INTERVAL_SEC = 300
-GPS_READ_TIMEOUT_SEC    = 30
+GPS_READ_TIMEOUT_SEC    = 90
 GPS_ENABLED             = PYNMEA2_AVAILABLE
 
 OCTAVE_FRACTION    = 3
@@ -66,14 +67,14 @@ FREQ_LIMITS        = [20, 20000]
 
 MIC_SENSITIVITY    = -26          # dBFS — check your INMP441 datasheet
 MIC_REF_DB         = 94.0         # dB SPL reference (1 Pa)
-MIC_OFFSET_DB      = 3.0103       # 2-channel correction (keep if mono: set 0)
+MIC_OFFSET_DB      = 0.0 #3.0103       # 2-channel correction (keep if mono: set 0)
 MIC_BITS           = 24
 MIC_REF_AMPL       = pow(10, MIC_SENSITIVITY / 20) * ((1 << (MIC_BITS - 1)) - 1)
 
 WEIGHTING_A        = 'A'
 WEIGHTING_C        = 'C'
 
-DISPLAY_MODE       = 'second'     # 'second' or 'minute'
+DISPLAY_MODE       = 'minute'     # 'second' or 'minute'
 SECONDS_PER_MINUTE = 60
 
 if DISPLAY_MODE not in ('second', 'minute'):
@@ -90,7 +91,7 @@ FRAME_SIZE  = HEADER_SIZE + (SAMPLES_SHORT * 4) + 4         # 24028 bytes
 RAW_QUEUE_SIZE    = 50
 RESULT_QUEUE_SIZE = 20
 
-PLOT_SECONDS_RAW = [10, 20]
+PLOT_SECONDS_RAW = [60, 120]
 
 MQTT_HOST  = 'localhost'
 MQTT_PORT  = 1883
@@ -203,65 +204,253 @@ class RingBuffer:
 # PROCESS 0: GPS READER
 # =============================================================================
 
+# def gps_reader_process(
+#     gps_array, gps_lock, gps_last_fix_time, stop_event,
+#     update_interval=GPS_UPDATE_INTERVAL_SEC,
+#     read_timeout=GPS_READ_TIMEOUT_SEC,
+# ):
+#     logging.basicConfig(level=logging.INFO,
+#                         format='%(asctime)s [GPS] %(message)s')
+#     logger = logging.getLogger()
+
+#     if not GPS_ENABLED:
+#         logger.warning("GPS disabled (pynmea2 not installed).")
+#         return
+
+#     import pynmea2
+
+#     logger.info(f"GPS started | port={GPS_PORT} interval={update_interval}s "
+#                 f"timeout={read_timeout}s")
+
+#     while not stop_event.is_set():
+#         fix_obtained  = False
+#         session_start = time.time()
+
+#         try:
+#             with serial.Serial(GPS_PORT, GPS_BAUD, timeout=1) as ser:
+#                 logger.info("GPS port open — waiting for fix...")
+#                 while (not stop_event.is_set() and not fix_obtained and
+#                        time.time() - session_start < read_timeout):
+#                     line = ser.readline().decode('ascii', errors='replace').strip()
+#                     if not line.startswith('$'):
+#                         continue
+#                     try:
+#                         msg = pynmea2.parse(line)
+#                     except pynmea2.ParseError:
+#                         continue
+#                     if isinstance(msg, pynmea2.types.talker.GGA):
+#                         if msg.gps_qual and int(msg.gps_qual) > 0:
+#                             lat = float(msg.latitude)
+#                             lon = float(msg.longitude)
+#                             gps_set(gps_array, gps_lock, gps_last_fix_time, lat, lon)
+#                             logger.info(f"Fix: lat={lat:.6f} lon={lon:.6f} "
+#                                         f"sats={msg.num_sats} alt={msg.altitude}m")
+#                             fix_obtained = True
+#         except serial.SerialException as e:
+#             logger.error(f"GPS serial error: {e}. Retry in 10s...")
+#             time.sleep(10)
+#             continue
+#         except Exception as e:
+#             logger.error(f"GPS error: {e}. Retry in 10s...")
+#             time.sleep(10)
+#             continue
+
+#         if not fix_obtained:
+#             logger.warning(f"No fix in {read_timeout}s. Using last known position.")
+
+#         sleep_end = time.time() + update_interval
+#         while time.time() < sleep_end and not stop_event.is_set():
+#             time.sleep(1)
+
+#     logger.info("GPS stopped.")
+
+"""
+gps_reader.py (PSM-compatible version)
+=======================================
+Drop-in replacement for gps_reader_process() that works correctly
+with the NEO-7M configured in Power Save Mode (ON/OFF, 300s update period).
+
+Key changes from original:
+  1. Serial port stays OPEN across the entire lifecycle (not opened/closed per cycle).
+     This prevents missing the GPS wake-up window due to port re-open latency.
+  2. Wider read window: listens for GPS_READ_TIMEOUT_SEC around each expected wake-up.
+  3. Self-healing: if port errors occur, re-opens after a short delay.
+  4. PSM timing awareness: Pi's sleep aligns with GPS update period to avoid drift.
+
+Usage: replace your existing gps_reader_process() with this one.
+All shared state (gps_array, gps_lock, gps_last_fix_time, stop_event) unchanged.
+"""
+
+# ─── Main GPS reader process ──────────────────────────────────────────────────
+ 
 def gps_reader_process(
     gps_array, gps_lock, gps_last_fix_time, stop_event,
     update_interval=GPS_UPDATE_INTERVAL_SEC,
     read_timeout=GPS_READ_TIMEOUT_SEC,
 ):
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s [GPS] %(message)s')
-    logger = logging.getLogger()
-
+    """
+    PSM-compatible GPS reader.
+ 
+    Design rationale for PSM ON/OFF compatibility:
+    ─────────────────────────────────────────────
+    With PSM ON/OFF at 300s, the NEO-7M wakes on its own internal clock,
+    transmits NMEA sentences for a brief window (~10–15s), then goes silent.
+ 
+    The original code opened/closed the serial port per cycle. With PSM,
+    the GPS wake window is narrow — re-opening the port can miss it.
+ 
+    Solution: Keep the port open continuously. This has zero performance cost
+    on the Raspberry Pi (idle serial port draws no meaningful CPU/power).
+ 
+    Timing alignment:
+    ─────────────────
+    Both the GPS and the Pi have independent 300s timers. They can drift.
+    This reader uses a wider listen window (read_timeout=90s) centered around
+    the expected wake-up, ensuring the fix is captured even with ±45s drift.
+ 
+    After each fix (or timeout), the Pi sleeps for update_interval minus
+    the time already spent listening, then listens again. This keeps the Pi's
+    cycle loosely in sync with the GPS's internal cycle.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [GPS] %(message)s"
+    )
+    logger = logging.getLogger("gps_reader")
+ 
     if not GPS_ENABLED:
-        logger.warning("GPS disabled (pynmea2 not installed).")
+        logger.warning("GPS disabled (GPS_ENABLED=False or pynmea2 not installed).")
         return
-
-    import pynmea2
-
-    logger.info(f"GPS started | port={GPS_PORT} interval={update_interval}s "
-                f"timeout={read_timeout}s")
-
-    while not stop_event.is_set():
-        fix_obtained  = False
-        session_start = time.time()
-
+ 
+    try:
+        import pynmea2
+    except ImportError:
+        logger.error("pynmea2 not installed. GPS disabled. Run: pip install pynmea2")
+        return
+ 
+    logger.info(
+        f"GPS reader started | port={GPS_PORT} baud={GPS_BAUD} | "
+        f"update_interval={update_interval}s | read_timeout={read_timeout}s"
+    )
+    logger.info("NOTE: NEO-7M is in PSM ON/OFF mode — it will wake autonomously every "
+                f"{update_interval}s and sleep between fixes.")
+ 
+    ser = None  # Persistent serial connection
+ 
+    def open_port():
+        nonlocal ser
         try:
-            with serial.Serial(GPS_PORT, GPS_BAUD, timeout=1) as ser:
-                logger.info("GPS port open — waiting for fix...")
-                while (not stop_event.is_set() and not fix_obtained and
-                       time.time() - session_start < read_timeout):
-                    line = ser.readline().decode('ascii', errors='replace').strip()
-                    if not line.startswith('$'):
-                        continue
-                    try:
-                        msg = pynmea2.parse(line)
-                    except pynmea2.ParseError:
-                        continue
-                    if isinstance(msg, pynmea2.types.talker.GGA):
-                        if msg.gps_qual and int(msg.gps_qual) > 0:
-                            lat = float(msg.latitude)
-                            lon = float(msg.longitude)
-                            gps_set(gps_array, gps_lock, gps_last_fix_time, lat, lon)
-                            logger.info(f"Fix: lat={lat:.6f} lon={lon:.6f} "
-                                        f"sats={msg.num_sats} alt={msg.altitude}m")
-                            fix_obtained = True
+            if ser and ser.is_open:
+                return True
+            ser = serial.Serial(GPS_PORT, GPS_BAUD, timeout=1)
+            logger.info(f"Serial port {GPS_PORT} opened (persistent connection)")
+            return True
         except serial.SerialException as e:
-            logger.error(f"GPS serial error: {e}. Retry in 10s...")
-            time.sleep(10)
-            continue
+            logger.error(f"Cannot open {GPS_PORT}: {e}. Retry in 10s...")
+            ser = None
+            return False
+ 
+    def close_port():
+        nonlocal ser
+        try:
+            if ser and ser.is_open:
+                ser.close()
+        except Exception:
+            pass
+        ser = None
+ 
+    # ── Initial port open ──
+    while not stop_event.is_set() and not open_port():
+        time.sleep(10)
+ 
+    # ── Main read loop ──
+    while not stop_event.is_set():
+        fix_obtained = False
+        cycle_start  = time.time()
+ 
+        # ── Listen window: read NMEA until fix or timeout ──
+        logger.info(f"Listening for GPS fix (window: {read_timeout}s)...")
+        try:
+            # Flush stale buffer before listening
+            if ser and ser.is_open:
+                ser.reset_input_buffer()
+ 
+            while (
+                not stop_event.is_set()
+                and not fix_obtained
+                and (time.time() - cycle_start) < read_timeout
+            ):
+                if not ser or not ser.is_open:
+                    if not open_port():
+                        time.sleep(5)
+                        continue
+ 
+                try:
+                    raw = ser.readline()
+                except serial.SerialException as e:
+                    logger.warning(f"Serial read error: {e}. Re-opening port...")
+                    close_port()
+                    time.sleep(2)
+                    open_port()
+                    continue
+ 
+                if not raw:
+                    continue
+ 
+                try:
+                    line = raw.decode("ascii", errors="replace").strip()
+                except Exception:
+                    continue
+ 
+                if not line.startswith("$"):
+                    continue
+ 
+                try:
+                    msg = pynmea2.parse(line)
+                except pynmea2.ParseError:
+                    continue
+ 
+                # Use GGA for position fix (has fix quality indicator)
+                if isinstance(msg, pynmea2.types.talker.GGA):
+                    if msg.gps_qual and int(msg.gps_qual) > 0:
+                        lat = float(msg.latitude)
+                        lon = float(msg.longitude)
+                        gps_set(gps_array, gps_lock, gps_last_fix_time, lat, lon)
+                        elapsed = time.time() - cycle_start
+                        logger.info(
+                            f"Fix obtained in {elapsed:.1f}s | "
+                            f"lat={lat:.6f} lon={lon:.6f} | "
+                            f"sats={msg.num_sats} alt={msg.altitude}m "
+                            f"qual={msg.gps_qual}"
+                        )
+                        fix_obtained = True
+ 
         except Exception as e:
-            logger.error(f"GPS error: {e}. Retry in 10s...")
-            time.sleep(10)
-            continue
-
+            logger.error(f"Unexpected GPS error: {e}. Continuing...")
+            time.sleep(2)
+ 
+        # ── Post-cycle logging ──
         if not fix_obtained:
-            logger.warning(f"No fix in {read_timeout}s. Using last known position.")
-
-        sleep_end = time.time() + update_interval
-        while time.time() < sleep_end and not stop_event.is_set():
-            time.sleep(1)
-
-    logger.info("GPS stopped.")
+            logger.warning(
+                f"No fix in {read_timeout}s window. "
+                "Using last known position. "
+                "(GPS may still be in acquisition — will retry next cycle)"
+            )
+ 
+        # ── Sleep for remainder of update interval ──
+        # Subtract time already spent in listen window so cycles stay aligned
+        elapsed      = time.time() - cycle_start
+        sleep_needed = max(0, update_interval - elapsed)
+ 
+        if sleep_needed > 0:
+            logger.info(f"Sleeping {sleep_needed:.1f}s until next GPS cycle...")
+            sleep_end = time.time() + sleep_needed
+            while time.time() < sleep_end and not stop_event.is_set():
+                time.sleep(1)
+ 
+    # ── Shutdown ──
+    close_port()
+    logger.info("GPS reader stopped.")
 
 # =============================================================================
 # PROCESS 1: SERIAL READER  — FIX 1: auto-reconnect on USB CDC glitch
@@ -330,6 +519,10 @@ def serial_reader_process(
                         header      = struct.unpack(HEADER_FMT, frame_bytes[:HEADER_SIZE])
                         calib       = header[4]
                         batt        = header[5]
+
+                        if math.isnan(batt):
+                            batt = 0.0
+
                         samples_end = HEADER_SIZE + SAMPLES_SHORT * 4
                         raw_samples = np.frombuffer(
                             frame_bytes[HEADER_SIZE:samples_end], dtype=np.float32
