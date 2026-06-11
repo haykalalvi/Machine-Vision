@@ -11,6 +11,7 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from pathlib import Path
 import matplotlib.pyplot as plt
+import random
 
 DATA_ROOT = Path('/Users/alvi/OpenCV/data/leather')
 
@@ -61,78 +62,85 @@ def get_val_transform(img_size=256):
     ])
 
 
-# ============================================================
-# MVTEC SEGMENTATION DATASET
-# ============================================================
+"""
+FIXED VERSION — MVTecSegDataset
+Splits the test/ folder (which has both good + defective images with masks)
+into train/val so the model actually sees defects during training.
+"""
 
-class MVTecSegDataset(Dataset):
+
+class MVTecSegDatasetFixed(Dataset):
     """
-    Loads MVTec AD images with their binary segmentation masks.
-    For training: loads good images only (mask = all zeros)
-    For validation: loads defective images with ground truth masks
+    FIXED: Uses test/ folder data (which has masks for defects)
+    and splits it into train/val ourselves.
+
+    train/good (Day 13's PatchCore data) is NOT used here —
+    it has no defect examples, so it cannot teach U-Net what a defect looks like.
     """
-    def __init__(self, data_root, split='train',
-                 defect_types=None, transform=None, img_size=256):
-        self.data_root    = Path(data_root)
-        self.split        = split
-        self.transform    = transform
-        self.img_size     = img_size
-        self.samples      = []  # list of (img_path, mask_path_or_None)
+    def __init__(self, data_root, split='train', transform=None,
+                 train_ratio=0.7, seed=42):
+        self.data_root = Path(data_root)
+        self.transform = transform
+        self.samples   = []
 
-        if split == 'train':
-            # Only good images — masks are all zeros
-            good_path = self.data_root / 'train' / 'good'
-            for img_path in sorted(good_path.glob('*.png')):
-                self.samples.append((img_path, None))
+        test_path = self.data_root / 'test'
+        gt_path   = self.data_root / 'ground_truth'
 
-        elif split == 'val':
-            # Defective images with ground truth masks
-            test_path = self.data_root / 'test'
-            gt_path   = self.data_root / 'ground_truth'
+        # Collect ALL test images (good + every defect type) with their masks
+        all_samples = []
+        for dtype_dir in sorted(test_path.iterdir()):
+            if not dtype_dir.is_dir():
+                continue
+            dtype = dtype_dir.name
 
-            if defect_types is None:
-                defect_types = [
-                    d.name for d in test_path.iterdir()
-                    if d.is_dir() and d.name != 'good'
-                ]
-
-            for dtype in defect_types:
-                for img_path in sorted((test_path / dtype).glob('*.png')):
+            for img_path in sorted(dtype_dir.glob('*.png')):
+                if dtype == 'good':
+                    # Good images → empty mask
+                    all_samples.append((img_path, None, dtype))
+                else:
                     mask_path = gt_path / dtype / (img_path.stem + '_mask.png')
                     if mask_path.exists():
-                        self.samples.append((img_path, mask_path))
+                        all_samples.append((img_path, mask_path, dtype))
 
-        print(f"  {split}: {len(self.samples)} samples loaded")
+        # Shuffle deterministically and split
+        random.Random(seed).shuffle(all_samples)
+        n_train = int(len(all_samples) * train_ratio)
+
+        if split == 'train':
+            self.samples = all_samples[:n_train]
+        else:  # val
+            self.samples = all_samples[n_train:]
+
+        # Print class balance — important to verify
+        n_good   = sum(1 for s in self.samples if s[1] is None)
+        n_defect = len(self.samples) - n_good
+        print(f"  {split}: {len(self.samples)} samples "
+              f"({n_good} good, {n_defect} defective)")
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        img_path, mask_path = self.samples[idx]
+        img_path, mask_path, dtype = self.samples[idx]
 
-        # Load image
         img = cv2.imread(str(img_path))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        # Load mask
-        if mask_path is not None and Path(mask_path).exists():
+        if mask_path is not None:
             mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
             mask = (mask > 127).astype(np.float32)
         else:
-            # Good image — mask is all zeros (no defects)
             mask = np.zeros(img.shape[:2], dtype=np.float32)
 
-        # Apply transforms — both image and mask transformed identically
         if self.transform:
             augmented = self.transform(image=img, mask=mask)
             img  = augmented['image']
-            mask = augmented['mask'].unsqueeze(0)  # add channel dim → [1, H, W]
+            mask = augmented['mask'].unsqueeze(0)
         else:
             img  = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
             mask = torch.from_numpy(mask).unsqueeze(0)
 
         return img, mask
-
 
 def denormalize(tensor):
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
@@ -147,11 +155,11 @@ if __name__ == '__main__':
     IMG_SIZE = 256
 
     print("Loading MVTec Leather datasets...")
-    train_dataset = MVTecSegDataset(
+    train_dataset = MVTecSegDatasetFixed(
         DATA_ROOT, split='train',
         transform=get_train_transform(IMG_SIZE)
     )
-    val_dataset = MVTecSegDataset(
+    val_dataset = MVTecSegDatasetFixed(
         DATA_ROOT, split='val',
         transform=get_val_transform(IMG_SIZE)
     )

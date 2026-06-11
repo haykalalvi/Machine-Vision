@@ -22,7 +22,7 @@ import wandb
 # ============================================================
 # Fixed Import: Make sure you renamed the previous file to 'segmentation_dataset.py'
 from segmentation_dataset import (
-    MVTecSegDataset, get_train_transform, get_val_transform
+    MVTecSegDatasetFixed, get_train_transform, get_val_transform
 )
 
 # ============================================================
@@ -139,8 +139,16 @@ if __name__ == '__main__':
     print(f"Device: {DEVICE}")
 
     # 1. Datasets and Loaders
-    train_dataset = MVTecSegDataset(DATA_ROOT, 'train', transform=get_train_transform(IMG_SIZE))
-    val_dataset   = MVTecSegDataset(DATA_ROOT, 'val',   transform=get_val_transform(IMG_SIZE))
+    # train_dataset = MVTecSegDataset(DATA_ROOT, 'train', transform=get_train_transform(IMG_SIZE))
+    # val_dataset   = MVTecSegDataset(DATA_ROOT, 'val',   transform=get_val_transform(IMG_SIZE))
+    train_dataset = MVTecSegDatasetFixed(
+        DATA_ROOT, split='train',
+        transform=get_train_transform(IMG_SIZE)
+    )
+    val_dataset = MVTecSegDatasetFixed(
+        DATA_ROOT, split='val',
+        transform=get_val_transform(IMG_SIZE)
+    )
 
     train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True,  num_workers=2, pin_memory=True)
     val_loader   = DataLoader(val_dataset,   batch_size=8, shuffle=False, num_workers=2, pin_memory=True)
