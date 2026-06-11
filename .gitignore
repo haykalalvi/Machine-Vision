@@ -1,6 +1,7 @@
 venv/
 __pycache__/
 *.pyc
+**/.DS_Store
 .DS_Store
 *.egg-info/
 .ipynb_checkpoints/
