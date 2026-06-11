@@ -9,3 +9,4 @@ runs/
 *.onnx
 data/
 dataset_NEU_KW/
+TA/
