@@ -1,3 +1,6 @@
+
+WE TALK ABOUT IMPROVING SPEED
+
 ## Notes
 1. Quantization in onnx runtime tu maksudnya adalah mengkuantiasasi model onnx ke 8 bit integer linear quantization.
 2. FP32 Baseline (Stage 1 YOLOv8)
