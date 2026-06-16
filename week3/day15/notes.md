@@ -3,6 +3,30 @@ WE TALK ABOUT IMPROVING SPEED
 
 ## Notes
 1. Quantization in onnx runtime tu maksudnya adalah mengkuantiasasi model onnx ke 8 bit integer linear quantization.
+   -. Jadi dia mengubah unit measurement dari resepnya ( asumsikan seperti pabrik makanan dengan berbagai kitchen)
+   -. setiap weight di model itu kan number. kalau FP32 itu nyimpen nomor dengan 32 bits (4 bytes) precision yang bisa represent 4 billion values berbeda. Sedangkan, INT8 itu cuma 8 bits yang sabi nampilin 256 values berbeda
+
+2. Dynamic quantization
+   -.weights di kuantisasi sekali,offline, dan sebelum diproses
+   -. tapi activationsnya di kuantisasi saat berjalan
+   -. easisest to apply, tapi speednya moderate
+
+3. Static quantization
+   -.weights di kuantisasi sekali,offline, dan sebelum diproses
+   -. activationsnya di kuantisasi sekali dan offline juga, tapi nanti hasilnya range yang akan digunakan. jadi harus run real data ke model dan ninjau nilai aktual min/max di setiap layernya (calibration namanya)
+   -. jadi faster inferencenya, tapi nilai calibration rangenya ya sebagus calibration datanya aja, kalai data kalibrasi kita ga sebagus real imagenya nanti, ya nanti bsia salah
+
+4. QAT (Quantization aware training)
+   -. intinya melatih model untuk latihan dengan kuantisasi yang digunakan (INT8) langsung
+   -. jadi dia simulate INT8 rounding error saat trainingnya, jadi nanti pas pake int8 ga ada akurasi loss
+5. latency itu delay dari cause and effect
+
+
+
+   
+
+
+# 
 2. FP32 Baseline (Stage 1 YOLOv8)
   Mean:      25.01 ms
   Median:    24.85 ms
@@ -32,20 +56,10 @@ WE TALK ABOUT IMPROVING SPEED
   Latency:  25.01ms -> 66.99ms (0.37x speedup)
   FPS:      40.0 -> 14.9
   Size:     11.84MB -> 3.34MB (3.54x smaller)
-4. Dynamic result
+4. Static result
 
-    Static INT8 (Stage 1 YOLOv8)
-
-  Mean:      11.90 ms
-  Median:    11.86 ms
-  Std dev:   0.26 ms
-  Min/Max:   11.57 / 12.82 ms
-  FPS:       84.0
-  Model size: 3.47 MB
-
-    after change the script 3 (exclude the final detection head layers from quantization)
     
-    Static INT8 (Stage 1 YOLOv8)
+  Static INT8 (Stage 1 YOLOv8)
 
   Mean:      15.02 ms
   Median:    14.91 ms
@@ -55,15 +69,7 @@ WE TALK ABOUT IMPROVING SPEED
   Model size: 3.37 MB
 
 5. Comparison result
-    THREE-WAY COMPARISON
-
-    Model                   Latency      FPS       Size   Speedup
-    FP32 (baseline)          25.01ms    40.0    11.84MB     1.00x
-    Dynamic INT8             66.99ms    14.9     3.34MB     0.37x
-    Static INT8              11.90ms    84.0     3.47MB     2.10x
-
-    after change the script 3 (exclude the final detection head layers from quantization)
-
+    
     THREE-WAY COMPARISON
     Model                   Latency      FPS       Size   Speedup
 

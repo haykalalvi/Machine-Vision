@@ -8,7 +8,7 @@ WE TALK ABOUT IMPROVING SPEED
 3. u can downgrade the opencv anad imagecodecs if needed
    "pip install "opencv-python<4.10" "opencv-contrib-python<4.10" "imagecodecs<2024""
 4. Script 1 output
-    Available OpenVINO devices on this machine: ['CPU']
+   Available OpenVINO devices on this machine: ['CPU']
   (On Apple Silicon, expect: ['CPU'] only -- no Intel GPU/NPU)
   (On Intel hardware, you might see: ['CPU', 'GPU', 'NPU'])
   CPU: Apple M1 Pro
@@ -67,7 +67,45 @@ Images with identical detection count: 29/48
    "not detected" (or vice versa) BETWEEN the two
    runtimes -> detection-level IoU=0.74
 
-7. 
+FP32 (raw recipe):
+  ONNX Runtime cooks it as-written: 50.40ms (slow, unoptimized)
+  OpenVINO REWRITES the recipe first (combines steps,
+  reorders ingredients for ITS oven): 15.94ms (much faster)
+  -> OpenVINO's rewrite was VERY valuable here
+
+Static INT8 (Day 15 already rewrote the recipe AND
+switched to metric units):
+  ONNX Runtime cooks this pre-rewritten recipe: 14.93ms
+  (already fast -- Day 15 did the rewriting AND unit
+  conversion)
+
+  OpenVINO takes this ALREADY-REWRITTEN recipe and
+  insists on rewriting it AGAIN into ITS OWN preferred
+  format: 19.51ms
+  -> The SECOND rewrite found nothing left to improve,
+     but STILL COST TIME to perform the rewrite itself
+  -> Net: slower than just using the already-good recipe
+     directly
+
+optimization A and optimization B both target the same bottleneck, so A+B < max(A, B) gain, sometimes A+B < A alone
+
+## Analogy
+1. 
+ONNX Runtime  = a generic kitchen that works in ANY house
+                (your Mac, a generic Linux PC, anything)
+                Good, but not hyper-optimized for any one
+                specific oven brand.
+
+OpenVINO      = Intel's PREMIUM kitchen, built specifically
+                for Intel CPUs/iGPUs. Knows every trick for
+                Intel hardware. If your factory PC has an
+                Intel chip, OpenVINO often runs the SAME
+                model 20-50% faster than generic ONNX Runtime.
+
+TensorRT      = NVIDIA's PREMIUM kitchen, built specifically
+                for NVIDIA GPUs (Jetson, RTX, etc.). Same idea
+                -- if you have an NVIDIA GPU, TensorRT extracts
+                performance ONNX Runtime can't.
 ## Questions
 1. What does the OpenVINO IR format (.xml + .bin) represent, conceptually, vs ONNX's single .onnx file?
    Open VINO IR format represents the graph structure (.xml) and the weights (.bin). when single.onnx file contains all of it/

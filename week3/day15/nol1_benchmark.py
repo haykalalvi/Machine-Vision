@@ -6,6 +6,8 @@ Methodology:
   1. Run N warm-up inferences (discarded) -- let backend compile/cache kernels
   2. Run M timed inferences -- measure these only
   3. Report mean, median, std, min, max -- not just one number
+
+Intinya ini mau nampilin speed dari model YOLO dengan ONNX RUNTIME yang mengabaikan coldstart
 """
 
 import onnxruntime as ort
@@ -22,7 +24,9 @@ def benchmark_onnx_model(onnx_path, input_shape=(1, 3, 512, 512),
     Returns dict with timing statistics in milliseconds.
     """
     if providers is None:
-        providers = ['CPUExecutionProvider']
+        providers = ['CPUExecutionProvider'] # it will run in cpu
+    
+    # warmup model dengan 10 kali run dulu, hasilnya dibuang
 
     session = ort.InferenceSession(onnx_path, providers=providers)
     input_name = session.get_inputs()[0].name
